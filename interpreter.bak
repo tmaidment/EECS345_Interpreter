@@ -1,0 +1,434 @@
+; Jeff Eben
+; Mammen Kurien
+; Tristan Maidment
+
+;hi
+
+
+(load "functionParser.scm")
+(load "state.scm")
+
+
+(define interpreter
+  (lambda (l)
+    (clearVars)
+      (pushLayer) ; Initial layer
+    (display S) (newline)
+      (overallProgramWrapper (parser l) '())))
+   
+
+(define interpreterFxn
+  (lambda (l returnBreak)
+    (pushLayer)
+    (display S) (newline)
+    (call/cc
+     (lambda (returnBreak)
+      (overallProgramWrapper l returnBreak)))))
+
+
+
+(define overallProgramWrapper
+  (lambda (l returnBreak)
+    
+       (computeProgramContinuations l '() '() returnBreak '())
+       ) ; will return value of return at this point
+    )
+
+
+
+(define computeProgramContinuations
+  (lambda (l continue break returnBreak tryBreak)
+    (cond
+      ((null? l) (void))
+      (else
+       (let ((computation (computeProgramLineContinuations (car l) continue break returnBreak tryBreak)))
+         (cond
+           ((void? computation) (computeProgramContinuations (cdr l) continue break returnBreak tryBreak))
+           ((global-scope?) computation)
+           ;(else computation)))))))
+           (else (computeProgramContinuations (cdr l) continue break returnBreak tryBreak))))))))
+
+
+(define computeProgramLineContinuations
+  (lambda (l continue break returnBreak tryBreak)
+    (cond
+      ((eq? (car l) 'function) (saveFunction (cdr l) returnBreak))
+      ((eq? (car l) 'funcall) (executeFunction (cdr l) returnBreak))
+      ((eq? (car l) 'var) (executeVar (cdr l)))
+      ((eq? (car l) '=) (executeEqual (cdr l)))
+      ((eq? (car l) 'return) (executeReturn (cdr l) returnBreak)) ;only returnBreak needed, since a return breaks from whole function
+      ((eq? (car l) 'if) (executeIf (cdr l) continue break returnBreak tryBreak)) ; Body could contain all possible call/cc vars
+      ((eq? (car l) 'while) (executeWhile (cdr l) returnBreak tryBreak)) ; Body could contain all possible call/cc vars
+      ((eq? (car l) 'begin) (computeProgramContinuations (cdr l) continue break returnBreak tryBreak)) 
+      ((eq? (car l) 'continue)
+       (if (null? continue)
+           (error "You cannot continue when there is no loop")
+           (continue 'continueReturn))) ;Should return to program spot where continuation is formed if I did it correctly
+      ((eq? (car l) 'break)
+       (if (null? break)
+           (error "You cannot break when there is no loop")
+           (break 'breakReturn)))
+
+      
+      ((eq? (car l) 'try) (executeTry (cdr l) continue break returnBreak tryBreak))
+      ((eq? (car l) 'catch) (executeCatch (cdr l) continue break returnBreak tryBreak)) 
+      ((eq? (car l) 'finally) (executeFinally (cdr l) continue break returnBreak tryBreak))
+      ((eq? (car l) 'throw)
+       (if (eq? tryBreak '())
+           (error "You cannot throw an exception out of a try block")
+           ((throw (cadr l))
+            (tryBreak 'tryReturn))))
+      (else
+       (if (eq? tryBreak '())
+           (error "You cannot throw an exception out of a try block")
+           (tryBreak 'tryReturn))) )))
+
+
+
+;----------------------------------------------------------------------------------------
+
+(define saveFunction
+  (lambda (l returnBreak)
+    (cond
+      ((eq? (car l) 'main)
+       (defineFxn (car l) (cadr l) (caddr l) S)
+       (display S) (newline)
+       (interpreterFxn (caddr l) returnBreak))
+      (else (defineFxn (car l) (cadr l) (caddr l) S)
+            (display S) (newline)
+            )
+      )))
+;defineFxn 'fxnName args body
+
+;car = fxn name
+;cadr = args
+;caddr = fxn body
+
+
+(define executeFunction
+  (lambda (l returnBreak)
+    (interpreterFxn (functionCreator (getFxn (car l) S) (cdr l)) returnBreak) ; input looks like (((args) (body)) (argValues))
+     ))
+;car = fxn name
+;cdr = inputs
+
+;Below is the format for getting the fxn
+;(getFxn 'fxnName)
+;returns
+;(args body)
+
+(define functionCreator
+  (lambda (fxnArgsBody fxnArgValues)
+    (let ((args (car fxnArgsBody)) (body (cadr fxnArgsBody))) ; abstract out args and body into individual lists
+      (functionCreatorHelper args body fxnArgValues)))) ; input looks like ((args) (body) (values))
+
+;(define functionCreatorHelper
+;  (lambda (args body values)
+;      (list (list 'var (car args) (car values)) (car body)) ; executeOperator should be called on args (if args is something like (- a 1)) when ran by fxn
+;    )
+;  )
+
+(define functionCreatorHelper
+  (lambda (args body values)
+    (append (append (cons (list 'var args values) '()) body) '((return))) ; appended return for case where there is no return
+    ;(createList args values body)
+    )
+  )
+
+
+
+
+;(define functionCreatorHelper2
+ ; (lambda (arg body value)
+   ; (cond
+     ; ((eq? body '()) '())
+      ;((eq? (car body) arg) (functionCreatorHelper2 arg (cons value (cdr body)) value))
+      ;((atom? (car body))
+      ; (cond
+     ;    ((eq? (car body) arg) (cons value (functionCreatorHelper2 arg (cdr body) value)))
+         ;(else (functionCreatorHelper2 arg (cons (car body) (cdr body)) value)))))
+    ;     (else (cons (car body) (functionCreatorHelper2 arg (cdr body) value))))))))
+      ;(else
+       
+      
+
+
+(define executeVar
+  (lambda (l)
+    (if (not (atom? (car l))) (executeMultVars (car l) (executeComputeValues (cadr l))) ; If vars declared at beginning of fxn, calls executeMultVars
+        (if (null? (cdr l))
+            (addVar (car l) '() S)
+            (addVar (car l) (executeOperator (cadr l)) S)))
+    (display S) (newline)
+    ))
+
+(define executeMultVars
+  (lambda (vars values)
+    (cond
+      ((and (null? vars) (null? values)) void)
+      ((or (null? vars) (null? values)) (error "Wrong number of inputs" ))
+      ((null? (car values))
+       (begin
+         (addVar (car vars) '() S)
+         (executeMultVars (cdr vars) (cdr values))))
+      (else
+       (begin
+         (addVar (car vars) (car values) S)
+         (executeMultVars (cdr vars) (cdr values)))))))
+
+; Computes all values in value list to get rid of static State definition problem
+(define executeComputeValues
+  (lambda (l)
+    (cond
+      ((null? l) l)
+      (else (cons (executeOperator (car l)) (executeComputeValues (cdr l)))))))
+
+
+(define executeEqual
+  (lambda (l)
+    (setVar (car l) (executeOperator (cadr l)) S)
+    (display S) (newline)
+    ))
+
+
+;atom? --> checks if atom
+(define atom?
+  (lambda (x)
+    (and (not (pair? x)) (not (null? x)))))
+
+;abstraction for ExecuteOperator and ExecuteReturn
+(define element1 car)
+(define second_element cadr )
+(define rest_of_rest cddr )
+(define third_element caddr )
+
+; This helper function returns the value of some parse-tree arithmetic subexpression
+; Could have numbers or variables that equal numbers
+(define executeOperator
+  (lambda (l)
+    (cond
+      ; If it's a straight up number
+      ((number? l) l)
+      ; If it's 'true'
+      ((eq? l 'true) #t)
+      ((eq? l 'false) #f)
+      ; If it's a variable
+      ; If none of the others, its a variable
+      ((atom? l) (getVar  l S))
+      ; Number in a list (for fib)
+      ;((number? (element1 l)) (element1 l)) ;----------------------23432942384238989234892348923489234898923489234892348923489
+      ; Function call
+      ((eq? (element1 l) 'funcall) (executeFunction (cdr l) '()))
+      ; This allows working with AND's and OR's
+      ((eq? (element1 l) '||) (or (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '&&) (and (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '!) (not (executeOperator (second_element l))))
+      ; Allows working with inequalities
+      ((eq? (element1 l) '>) (> (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '>=) (>= (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '<) (< (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '<=) (<= (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '==) (eq? (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '!=) (not (eq? (executeOperator (second_element l)) (executeOperator (third_element l)))))
+      ; If list isn't null, isn't conditional, and isn't and/or, it must start with operator (or variable)
+      ((eq? (element1 l) '+) (+ (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ; Two cases: unary -, or subtraction
+      ((eq? (element1 l) '-)
+       (if (null? (rest_of_rest l)) ;This case is when unary - is used
+            (- 0 (executeOperator (second_element l)))
+            (- (executeOperator (second_element l)) (executeOperator (third_element l))))) ; this is subtraction case
+      ((eq? (element1 l) '*) (* (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '/) (/ (executeOperator (second_element l)) (executeOperator (third_element l))))
+      ((eq? (element1 l) '%) (modulo (executeOperator (second_element l)) (executeOperator (third_element l)))) )))
+
+; Wrapper
+(define executeReturn
+  (lambda (l returnBreak)
+    ; Case when there is no return value in a fxn
+    (if (null? l) ((popLayer)
+                   (returnBreak (void)))
+    (if (eq? (executeOperator (element1 l)) #t) ;covert #t to true
+        ((popLayer)
+         (display S) (newline)
+        (returnBreak 'true))
+        (if (eq? (executeOperator (element1 l)) #f) ;convert #f to false
+        ((popLayer)
+         (display S) (newline)
+         (returnBreak 'false))
+        ((let ((result (executeOperator (element1 l))))
+           (popLayer)
+           (display S) (newline)
+           (returnBreak result))))))))
+
+
+;Abstraction for ExecuteIf
+(define element_1 car)
+(define second_element cadr )
+(define rest_of_rest cddr )
+(define third_element caddr )
+
+; {(conditional) (then-statement) (optional-else-statement)}
+; If (car l) isn't equal to an operator, it must be one of the computeProgram cases
+(define executeIf
+  (lambda (l continue break returnBreak tryBreak)
+    (cond
+      ((eq? (executeOperator (element_1 l)) #t)
+       (pushLayer)
+       (display S) (newline)
+       (breakAbstraction (second_element l) continue break returnBreak tryBreak 'if))
+      ((not (eq? (rest_of_rest l) '()))
+       (pushLayer)
+       (display S) (newline)
+       (breakAbstraction (third_element l) continue break returnBreak tryBreak 'if)))))
+
+
+; Expression must either be some expression (executeOperator) or one of the 5 parse tree statements 
+(define executeIfThenStatement
+  (lambda (l continue break returnBreak tryBreak)
+    (computeProgramLineContinuations l continue break returnBreak tryBreak) ; used ComputeProgram in case it returns value.  
+      ))
+
+; {(conditional) (body statement)}
+; Create continuation before doing the whileThen, so that way if break is found, whole while loop is broken from
+(define executeWhile
+  (lambda (l returnBreak tryBreak) 
+    (breakAbstraction l '() '() returnBreak tryBreak 'whilebreak)
+    ))
+    
+
+; Created for correct implementation of break continuation
+(define executeWhileAfterBreak
+  (lambda (l break returnBreak tryBreak)
+    (cond
+      ((eq? (executeOperator (car l)) #t) (executeWhileThen l break returnBreak tryBreak))
+      )))
+
+
+
+; For continue, this should break out of continue block and just do the (executeWhile initialList) if continue is called
+(define executeWhileThen;CallCC
+  (lambda (l break returnBreak tryBreak)
+    (pushLayer)
+    (display S) (newline)
+    (breakAbstraction l '() break returnBreak tryBreak 'whilecontinue)
+    ))
+
+
+(define executeTry
+  (lambda (l continue break returnBreak previousTryBreak)
+    (pushLayer)
+    (display S) (newline)
+    (breakAbstraction l continue break returnBreak previousTryBreak 'try)))
+
+;Abstraction for ExecuteFinally
+(define second_element cadr )
+
+(define executeCatch
+  (lambda (l continue break returnBreak previousTryBreak)
+    (addVar (caar l) (getThrow) S)
+    (computeProgramContinuations (second_element l) continue break returnBreak previousTryBreak)
+    (popLayer)
+    (display S) (newline)
+    ))
+
+;Abstraction for ExecuteCatch
+(define element_1 car)
+
+(define executeFinally
+  (lambda (l continue break returnBreak previousTryBreak)
+    (computeProgramContinuations (element_1 l) continue break returnBreak previousTryBreak)
+    (popLayer)
+    (display S) (newline)
+    ))
+
+(define breakAbstraction
+  (lambda (l continue break returnBreak tryBreak type)
+    (cond
+      ((eq? type 'whilebreak)
+       ; Must use this to make sure theres not a double remove from continue and break
+       (cond
+         ((eq? (call/cc
+                (lambda (break)
+                  (executeWhileAfterBreak l break returnBreak tryBreak))) 'breakReturn)
+          (popLayer)
+          (display S) (newline)
+          )))
+      ((eq? type 'whilecontinue)
+       (let ((l2 (cadr l)))
+       (call/cc
+        (lambda (continue)
+          (computeProgramLineContinuations l2 continue break returnBreak tryBreak)
+       ))
+         (popLayer)
+         (display S) (newline)
+         (executeWhileAfterBreak l break returnBreak tryBreak)))
+
+
+      ((eq? type 'if)
+       (letrec ((returnType (lambda (l continue break returnBreak tryBreak type)                     
+                              (call/cc
+                               (lambda (ifbreak)
+                                 (executeIfThenStatement l ifbreak ifbreak ifbreak ifbreak))))))
+         (let ((type (returnType l continue break returnBreak tryBreak type)))
+           (cond
+             ((eq? type 'breakReturn)
+              (begin
+                (popLayer)
+                (display S) (newline)
+                (break 'breakReturn)))
+             ((eq? type 'continueReturn)
+              (begin
+                (popLayer)
+                (display S) (newline)
+                (continue 'continueReturn)))
+             ((eq? type 'tryReturn)
+              (let ((thrownVar (getThrow)))
+                (begin
+                  (popLayer)
+                  (display S) (newline)
+                  (throw thrownVar)
+                  (tryBreak 'tryReturn))))
+             ((not (void? type))
+              (begin
+                (popLayer)
+                (display S) (newline)
+                (returnBreak type)))
+             (else
+              (popLayer)
+              (display S) (newline)
+              )))))
+                              
+
+      ((eq? type 'try)
+       (call/cc
+        (lambda (tryBreak)
+          (computeProgramContinuations (car l) continue break returnBreak tryBreak)))
+       ; Will be '() if nothing thrown
+       (let ((thrownVar (getThrow)))
+         ; Get rid of current layer
+         (popLayer)
+         (display S) (newline)
+         (cond
+           ; If catch exists
+           ((not (null? (cadr l)))
+            (if (not (null? thrownVar))
+                (begin
+                  (pushLayer)
+                  (display S) (newline)
+                  (throw thrownVar)
+                  (computeProgramLineContinuations (cadr l) continue break returnBreak tryBreak)))
+            (cond
+              ((not (null? (caddr l)))
+               (begin
+                 (pushLayer)
+                 (display S) (newline)
+                 (computeProgramLineContinuations (caddr l) continue break returnBreak tryBreak)))))
+           ((not (null? (caddr l)))
+            (begin
+              (pushLayer)
+              (display S) (newline)
+              (computeProgramLineContinuations (caddr l) continue break returnBreak tryBreak))))))
+      
+      
+    )))
+
